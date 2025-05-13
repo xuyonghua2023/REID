@@ -8,76 +8,13 @@ import numpy as np
 import copy
 
 
-# 辅助函数：窗口划分
-def window_partition(x, window_size):
-    """
-    将特征图划分为非重叠窗口
-    Args:
-        x: 输入特征图，形状 (B, C, H, W)
-        window_size: 窗口大小 (int)
-    Returns:
-        windows: 窗口化的特征，形状 (B*num_windows, C, window_size, window_size)
-        num_windows_h, num_windows_w: 窗口数量
-    """
-    B, C, H, W = x.shape
-    # 确保 H, W 是 window_size 的整数倍（可通过 padding 调整）
-    pad_h = (window_size - H % window_size) % window_size
-    pad_w = (window_size - W % window_size) % window_size
-    x = F.pad(x, (0, pad_w, 0, pad_h))
-    H_padded, W_padded = H + pad_h, W + pad_w
-
-    # 调整形状为 (B, C, num_windows_h, window_size, num_windows_w, window_size)
-    x = x.view(B, C, H_padded // window_size, window_size, W_padded // window_size, window_size)
-    # 转换为 (B*num_windows, C, window_size, window_size)
-    windows = x.permute(0, 2, 4, 1, 3, 5).contiguous().view(-1, C, window_size, window_size)
-    return windows, H_padded // window_size, W_padded // window_size
-
-# 辅助函数：窗口合并
-def window_reverse(windows, num_windows_h, num_windows_w, window_size, H_padded, W_padded):
-    """
-    将窗口化的特征合并回原始特征图
-    Args:
-        windows: 窗口化特征，形状 (B*num_windows, C, window_size, window_size)
-        num_windows_h, num_windows_w: 窗口数量
-        window_size: 窗口大小
-        H_padded, W_padded: 填充后的特征图尺寸
-    Returns:
-        x: 合并后的特征图，形状 (B, C, H_padded, W_padded)
-    """
-    B = windows.shape[0] // (num_windows_h * num_windows_w)
-    x = windows.view(B, num_windows_h, num_windows_w, -1, window_size, window_size)
-    x = x.permute(0, 3, 1, 4, 2, 5).contiguous().view(B, -1, H_padded, W_padded)
-    return x
-
-# 辅助函数：移位窗口
-def shifted_window(x, window_size, shift_size):
-    """
-    对特征图进行移位窗口操作
-    Args:
-        x: 输入特征图，形状 (B, C, H, W)
-        window_size: 窗口大小
-        shift_size: 移位大小（通常为 window_size // 2）
-    Returns:
-        x_shifted: 移位后的特征图
-    """
-    B, C, H, W = x.shape
-    x_shifted = torch.roll(x, shifts=(-shift_size, -shift_size), dims=(2, 3))
-    return x_shifted
-
-
-
-
-
-
 def pdist(vectors):
     distance_matrix = -2 * vectors.mm(torch.t(vectors)) + vectors.pow(2).sum(dim=1).view(1, -1) + vectors.pow(2).sum(
         dim=1).view(-1, 1)
-    return distance_matrix 
+    return distance_matrix
 
 def count_parameters(model): return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-
-# 权重初始化函数
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
@@ -92,7 +29,7 @@ def weights_init_kaiming(m):
             nn.init.constant_(m.weight, 1.0)
             nn.init.constant_(m.bias, 0.0)
 
-# 权重初始化函数
+
 def weights_init_classifier(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
@@ -120,103 +57,11 @@ class MHA(nn.Module):
         return out
 
 
-
-# 修改后的 MHSA 模块
-class MHSA(nn.Module):
-    def __init__(self, n_dims, heads=4, window_size=8):
-        """
-        多头自注意力模块，支持动态分辨率和局部窗口自注意力
-        Args:
-            n_dims (int): 输入通道数
-            heads (int): 注意力头数
-            window_size (int): 局部窗口大小
-        """
-        super(MHSA, self).__init__()
-        self.heads = heads
-        self.window_size = window_size
-        self.head_dim = n_dims // heads
-        assert n_dims % heads == 0, "n_dims must be divisible by heads"
-
-        # 1x1 卷积生成 Q, K, V
-        self.query = nn.Conv2d(n_dims, n_dims, kernel_size=1, bias=True)
-        self.key = nn.Conv2d(n_dims, n_dims, kernel_size=1, bias=True)
-        self.value = nn.Conv2d(n_dims, n_dims, kernel_size=1, bias=True)
-
-        # 可学习的相对位置编码（动态生成）
-        self.rel_pos_bias = nn.Parameter(torch.randn(heads, (2 * window_size - 1) * (2 * window_size - 1)), requires_grad=True)
-
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-
-        # 第一次窗口自注意力（非移位）
-        windows, num_windows_h, num_windows_w = window_partition(x, self.window_size)
-        attn_output = self._compute_attention(windows)
-        x = window_reverse(attn_output, num_windows_h, num_windows_w, self.window_size, H, W)
-
-        # 第二次窗口自注意力（移位窗口）
-        x_shifted = shifted_window(x, self.window_size, self.window_size // 2)
-        windows, num_windows_h, num_windows_w = window_partition(x_shifted, self.window_size)
-        attn_output = self._compute_attention(windows)
-        x_shifted = window_reverse(attn_output, num_windows_h, num_windows_w, self.window_size, H, W)
-        x_shifted = torch.roll(x_shifted, shifts=(self.window_size // 2, self.window_size // 2), dims=(2, 3))
-
-        # 融合非移位和移位结果
-        x = (x + x_shifted) / 2
-
-        # 移除填充（如果有）
-        if x.shape[2] > H or x.shape[3] > W:
-            x = x[:, :, :H, :W]
-
-        return x
-
-    def _compute_attention(self, x):
-        B, C, window_size, _ = x.shape
-        N = window_size * window_size  # 窗口内像素数
-
-        # 生成 Q, K, V
-        q = self.query(x).view(B, self.heads, self.head_dim, N)
-        k = self.key(x).view(B, self.heads, self.head_dim, N)
-        v = self.value(x).view(B, self.heads, self.head_dim, N)
-
-        # 计算注意力分数
-        content_content = torch.matmul(q.permute(0, 1, 3, 2), k)  # (B, heads, N, N)
-
-        # 修正：生成相对位置偏置
-        # 构建相对位置索引表
-        coords_h = torch.arange(window_size)
-        coords_w = torch.arange(window_size)
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing='ij'))  # (2, window_size, window_size)
-        coords_flatten = coords.reshape(2, -1)  # (2, N)
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # (2, N, N)
-        relative_coords = relative_coords.permute(1, 2, 0)  # (N, N, 2)
-        relative_coords[:, :, 0] += self.window_size - 1  # 偏移到非负
-        relative_coords[:, :, 1] += self.window_size - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size - 1
-        relative_pos_index = relative_coords.sum(-1)  # (N, N)
-
-        # 映射到 rel_pos_bias
-        rel_pos_bias = self.rel_pos_bias[:, relative_pos_index]  # (heads, N, N)
-        rel_pos_bias = rel_pos_bias.unsqueeze(0)  # (1, heads, N, N)
-
-        # 相加
-        energy = content_content + rel_pos_bias
-
-        # 注意力归一化
-        attention = self.softmax(energy / (self.head_dim ** 0.5))
-
-        # 计算输出
-        out = torch.matmul(v, attention.permute(0, 1, 3, 2))
-        out = out.view(B, C, window_size, window_size)
-        return out
-
-
 ## Transformer Block
-## multi Head attetnion from BoTnet https://github.com/leaderj1001/BottleneckTransformers/blob/main/model.py
-class MHSA_old(nn.Module):
+##multi Head attetnion from BoTnet https://github.com/leaderj1001/BottleneckTransformers/blob/main/model.py
+class MHSA(nn.Module):
     def __init__(self, n_dims, width=16, height=16, heads=4):
-        super(MHSA_old, self).__init__()
+        super(MHSA, self).__init__()
         self.heads = heads
         ### , bias = False in conv2d
         self.query = nn.Conv2d(n_dims, n_dims, kernel_size=1, bias = True)
@@ -247,73 +92,13 @@ class MHSA_old(nn.Module):
 
         return out
 
-
-
-
-# 修改后的 Bottleneck_Transformer 模块
-class Bottleneck_Transformer(nn.Module):
-    expansion = 4
-
-    def __init__(self, in_planes, planes, stride=1, heads=4, window_size=8, use_mlp=False):
-        """
-        Bottleneck Transformer 模块，支持动态分辨率
-        Args:
-            in_planes (int): 输入通道数
-            planes (int): 中间通道数
-            stride (int): 步幅
-            heads (int): 注意力头数
-            window_size (int): 窗口大小
-            use_mlp (bool): 是否使用 MLP
-        """
-        super(Bottleneck_Transformer, self).__init__()
-
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-
-        self.conv2 = nn.ModuleList()
-        self.conv2.append(MHSA(planes, heads=heads, window_size=window_size))
-        if stride == 2:
-            self.conv2.append(nn.AvgPool2d(2, 2))
-        self.conv2 = nn.Sequential(*self.conv2)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(self.expansion * planes)
-
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride),
-                nn.BatchNorm2d(self.expansion * planes)
-            )
-
-        self.use_mlp = use_mlp
-        if use_mlp:
-            self.LayerNorm = nn.InstanceNorm2d(in_planes)
-            self.MLP_torch = torchvision.ops.MLP(in_planes, [512, 2048])
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        if self.use_mlp:
-            residual = out
-            out = self.LayerNorm(out)
-            out = out.permute(0, 3, 2, 1)
-            out = self.MLP_torch(out)
-            out = out.permute(0, 3, 2, 1)
-            out = out + residual
-        return out
-
-
 ###also from https://github.com/leaderj1001/BottleneckTransformers/blob/main/model.py
 # 这个是自注意力机制？？
-class Bottleneck_Transformer_old(nn.Module):
+class Bottleneck_Transformer(nn.Module):
     expansion = 4 # 输出通道的扩展倍数
 
     def __init__(self, in_planes, planes, stride=1, heads=4, resolution=None, use_mlp = False):
-        super(Bottleneck_Transformer_old, self).__init__()
+        super(Bottleneck_Transformer, self).__init__()
 
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
@@ -360,7 +145,6 @@ class Bottleneck_Transformer_old(nn.Module):
 
 # Defines the new fc layer and classification layer
 # |--MLP--|--bn--|--relu--|--Linear--|
-# 分类器
 class ClassBlock(nn.Module):
     def __init__(self, input_dim, class_num, droprate=0.0, relu=False, bnorm=True, linear=False, return_f = True, circle=False):
         super(ClassBlock, self).__init__()
@@ -433,8 +217,7 @@ class Conv_MHSA_2G(nn.Module):
     def __init__(self, c_in, c_out, resolution=[16,16], heads=4) -> None:
         super().__init__()
         self.conv2 = nn.Conv2d(c_in//2, c_out//2, kernel_size=3, stride=1, padding=1, bias=False)
-        # self.MHSA_1 = MHSA(c_out//2, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
-        self.MHSA_1 = MHSA(c_out//2, heads=heads,window_size=8)
+        self.MHSA_1 = MHSA(c_out//2, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
 
 
     def forward(self,x):
@@ -449,10 +232,8 @@ class Conv_MHSA_4G(nn.Module):
     def __init__(self, c_in, c_out, resolution=[16,16], heads=4) -> None:
         super().__init__()
         self.conv2 = nn.Conv2d(c_in//2, c_out//2, kernel_size=3, stride=1, padding=1, groups=2, bias=False)
-        # self.MHSA_1 = MHSA(c_out//4, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
-        # self.MHSA_2 = MHSA(c_out//4, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
-        self.MHSA_1 = MHSA(c_out//4,  heads=heads,window_size=8)
-        self.MHSA_2 = MHSA(c_out//4,  heads=heads,window_size=8)
+        self.MHSA_1 = MHSA(c_out//4, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
+        self.MHSA_2 = MHSA(c_out//4, width=int(resolution[0]), height=int(resolution[1]), heads=heads)
 
     def forward(self,x):
         x_12 = self.conv2(x[:,:x.size(1)//2,:,:])
@@ -461,14 +242,11 @@ class Conv_MHSA_4G(nn.Module):
         x = torch.cat((x_12, x_3, x_4), dim=1)
 
         return x
-
 class MHSA_2G(nn.Module):
     def __init__(self, c_out, resolution=[16,16], heads=4) -> None:
         super().__init__()
-        # self.MHSA_1 = MHSA(int(c_out//2), width=int(resolution[0]), height=int(resolution[1]), heads=heads)
-        # self.MHSA_2 = MHSA((c_out//2), width=int(resolution[0]), height=int(resolution[1]), heads=heads)
-        self.MHSA_1 = MHSA(int(c_out//2),heads=heads,window_size=8)
-        self.MHSA_2 = MHSA((c_out//2),heads=heads,window_size=8)
+        self.MHSA_1 = MHSA(int(c_out//2), width=int(resolution[0]), height=int(resolution[1]), heads=heads)
+        self.MHSA_2 = MHSA((c_out//2), width=int(resolution[0]), height=int(resolution[1]), heads=heads)
 
     def forward(self,x):
         x_ce = self.MHSA_1(x[:,:x.size(1)//2,:,:])
@@ -513,22 +291,19 @@ class base_branches(nn.Module):
         x = self.model(x)
         return x
 
-
-
-
 # 分支结构
 class multi_branches(nn.Module):
     def __init__(self, n_branches, n_groups, pretrain_ongroups=True, end_bot_g=False, group_conv_mhsa=False, group_conv_mhsa_2=False, x2g = False, x4g=False):
         super(multi_branches, self).__init__()
 
-        # 得到resnet50的layer4层
+        # 得到rsnet50的layer4层
         model_ft = torch.hub.load('XingangPan/IBN-Net', 'resnet50_ibn_a', pretrained=True)
         model_ft= model_ft.layer4
         
         self.x2g = x2g
         self.x4g = x4g
         
-        # 分组卷积策略
+        # groups数量？？？
         if n_groups > 0:
             convlist = [k.split('.') for k, m in model_ft.named_modules(remove_duplicate=False) if isinstance(m, nn.Conv2d)]
             for item in convlist:
@@ -568,12 +343,9 @@ class multi_branches(nn.Module):
                     if item =="R50":
                         self.model.append(copy.deepcopy(model_ft))
                     elif item == "BoT":
-                        # layer_0 = Bottleneck_Transformer(1024, 512, resolution=[16, 16], use_mlp = False)
-                        # layer_1 = Bottleneck_Transformer(2048, 512, resolution=[16, 16], use_mlp = False)
-                        # layer_2 = Bottleneck_Transformer(2048, 512, resolution=[16, 16], use_mlp = False)
-                        layer_0 = Bottleneck_Transformer(1024, 512, window_size=8, use_mlp = False)
-                        layer_1 = Bottleneck_Transformer(2048, 512, window_size=8, use_mlp = False)
-                        layer_2 = Bottleneck_Transformer(2048, 512, window_size=8, use_mlp = False)
+                        layer_0 = Bottleneck_Transformer(1024, 512, resolution=[16, 16], use_mlp = False)
+                        layer_1 = Bottleneck_Transformer(2048, 512, resolution=[16, 16], use_mlp = False)
+                        layer_2 = Bottleneck_Transformer(2048, 512, resolution=[16, 16], use_mlp = False)
                         self.model.append(nn.Sequential(layer_0, layer_1, layer_2))
                     else:
                         print("No valid architecture selected for branching by expansion!")
@@ -581,10 +353,9 @@ class multi_branches(nn.Module):
         else:
             self.model.append(model_ft)
 
-    
+
     def forward(self, x):
         output = []
-        # 每一个分支都计算输出? ?
         for cnt, branch in enumerate(self.model):
             if self.x2g and cnt>0:
                 aux = torch.cat((x[:,int(x.shape[1]/2):,:,:], x[:,:int(x.shape[1]/2),:,:]), dim=1)
@@ -597,21 +368,17 @@ class multi_branches(nn.Module):
        
         return output
 
-# 最后的处理的层
 class FinalLayer(nn.Module):
     def __init__(self, class_num, n_branches, n_groups, losses="LBS", droprate=0, linear_num=False, return_f = True, circle_softmax=False, n_cams=0, n_views=0, LAI=False, x2g=False,x4g=False):
         super(FinalLayer, self).__init__()    
-        
         self.avg_pool = nn.AdaptiveAvgPool2d((1,1))
         self.finalblocks = nn.ModuleList()
         self.withLAI = LAI
-
-        # 分组卷积情况
         if n_groups > 0:
             self.n_groups = n_groups
             for i in range(n_groups*(len(n_branches)+1)):
                 if losses == "LBS":
-                    if i % 2==0:
+                    if i%2==0:
                         self.finalblocks.append(ClassBlock(int(2048/n_groups), class_num, droprate, linear=linear_num, return_f = return_f, circle=circle_softmax))
                     else:
                         bn= nn.BatchNorm1d(int(2048/n_groups))
@@ -620,15 +387,12 @@ class FinalLayer(nn.Module):
                         self.finalblocks.append(bn)
                 else:
                     self.finalblocks.append(ClassBlock(int(2048/n_groups), class_num, droprate, linear=linear_num, return_f = return_f, circle=circle_softmax))
-        # 不分组就是一组
         else:
             self.n_groups = 1
             for i in range(len(n_branches)):
                 if losses == "LBS":
-                    # 偶数索引，用于分类
-                    if i % 2==0:
+                    if i%2==0:
                         self.finalblocks.append(ClassBlock(2048, class_num, droprate, linear=linear_num, return_f = return_f, circle=circle_softmax))
-                    # 奇数索引
                     else:
                         bn= nn.BatchNorm1d(int(2048))
                         bn.bias.requires_grad_(False)  
@@ -642,7 +406,6 @@ class FinalLayer(nn.Module):
         else:
             self.LBS = False
 
-        # 如果需要额外的信息
         if self.withLAI:
             # self.LAI = []
             self.n_cams = n_cams
@@ -706,12 +469,9 @@ class FinalLayer(nn.Module):
 class MBR_model(nn.Module):         
     def __init__(self, class_num, n_branches, n_groups, losses="LBS", backbone="ibn", droprate=0, linear_num=False, return_f = True, circle_softmax=False, pretrain_ongroups=True, end_bot_g=False, group_conv_mhsa=False, group_conv_mhsa_2=False, x2g=False, x4g=False, LAI=False, n_cams=0, n_views=0):
         super(MBR_model, self).__init__()  
-        
-        # 主干网络（预训练的resnet50）
+
         self.modelup2L3 = base_branches(backbone=backbone)
-        
         self.modelL4 = multi_branches(n_branches=n_branches, n_groups=n_groups, pretrain_ongroups=pretrain_ongroups, end_bot_g=end_bot_g, group_conv_mhsa=group_conv_mhsa, group_conv_mhsa_2=group_conv_mhsa_2, x2g=x2g, x4g=x4g)
-        
         self.finalblock = FinalLayer(class_num=class_num, n_branches=n_branches, n_groups=n_groups, losses=losses, droprate=droprate, linear_num=linear_num, return_f=return_f, circle_softmax=circle_softmax, LAI=LAI, n_cams=n_cams, n_views=n_views, x2g=x2g, x4g=x4g)
         
 
@@ -729,7 +489,6 @@ if __name__ == "__main__":
 
     ### MBR_4B
     model = MBR_model(575, ["R50", "R50", "BoT", "BoT"], n_groups=0, losses ="LBS", LAI=True)
-    
     preds, embs, ffs, output = model(input, torch.randint(0,19,(32,1)), torch.randint(0,7,(32,8)))
     print("\nn_preds: ", len(preds))
     print("n_embs: ", len(embs))
