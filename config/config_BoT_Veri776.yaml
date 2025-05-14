@@ -45,10 +45,10 @@ pretrain_ongroups: True
 ##DATA
 ROOT_DIR: /mnt/DATADISK/Datasets/vehicle/VERIWILD/images/
 
-BATCH_SIZE: 24 #48
-NUM_INSTANCES: 4 #8
-num_workers_train: 2 #8
-num_workers_teste: 2
+BATCH_SIZE: 48 #48
+NUM_INSTANCES: 8 #8
+num_workers_train: 8 #8
+num_workers_teste: 16
 
 y_length: 256
 x_length: 256
@@ -63,15 +63,15 @@ p_rerase: 0.5
 dataset: Veri776 #Veri776
 
 n_classes: 575 #30671 #770
-query_dir: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/image_query #/mnt/DATADISK/Datasets/vehicle/VeRi/image_query/ #
-teste_dir: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/image_test  #/mnt/DATADISK/Datasets/vehicle/VeRi/image_test/ #
-train_dir: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/image_train #/mnt/DATADISK/Datasets/vehicle/VeRi/image_train/ #
-query_list_file: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/name_query.txt
-gallery_list_file: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/name_test.txt
-train_list_file: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi/name_train.txt
+query_dir: /root/REID/dataset/VeRi/image_query #/mnt/DATADISK/Datasets/vehicle/VeRi/image_query/ #
+teste_dir: /root/REID/dataset/VeRi/image_test  #/mnt/DATADISK/Datasets/vehicle/VeRi/image_test/ #
+train_dir: /root/REID/dataset/VeRi/image_train #/mnt/DATADISK/Datasets/vehicle/VeRi/image_train/ #
+query_list_file: /root/REID/dataset/VeRi/name_query.txt
+gallery_list_file: /root/REID/dataset/VeRi/name_test.txt
+train_list_file: /root/REID/dataset/VeRi/name_train.txt
 
-test_keypoint: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi_1/keypoint_orient_test.txt
-train_keypoint: C:/Users/xuyonghua/Desktop/vehicle_reid_itsc2023-main/dataset/VeRi_1/keypoint_orient_train.txt
+test_keypoint: /root/REID/dataset/VeRi_1/keypoint_orient_test.txt
+train_keypoint: /root/REID/dataset/VeRi_1/keypoint_orient_train.txt
 
 ### Define an optimizer settings
 optimizer: Adam #Adam SGD
